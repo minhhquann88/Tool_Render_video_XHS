@@ -1,59 +1,55 @@
 from PySide6.QtCore import Signal
 from PySide6.QtGui import QBrush, QColor, QFont
 from PySide6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QComboBox, QFontComboBox, QFormLayout, QGroupBox,
-    QHBoxLayout, QHeaderView, QPushButton, QSpinBox, QTableWidget, QTableWidgetItem,
-    QVBoxLayout, QWidget,
+    QAbstractItemView, QCheckBox, QFontComboBox, QFormLayout, QGroupBox, QHBoxLayout, QHeaderView,
+    QMenu, QPushButton, QSpinBox, QTableWidget, QTableWidgetItem,
 )
 
 from app.models import SubStyle, SubtitleLine
 from app.services.subtitle.base import SubtitleSource
-from app.ui.theme import accent
-from app.ui.widgets.common import ColorButton, muted_label
+from app.ui.widgets.common import ColorButton, StepPage, muted_label
 from app.utils.timefmt import ms_to_str, str_to_ms
 
 COL_START, COL_END, COL_ORIGINAL, COL_TEXT = range(4)
 _ACTIVE_BG = QColor("#2b1d22")
 
 
-class SubtitlePanel(QWidget):
-    """Tab Phụ đề: tạo / sửa sub mới + kiểu chữ chèn vào vùng mờ."""
+class SubtitlePanel(StepPage):
+    """Bước 2: sửa sub mới (chèn vào vùng mờ) + kiểu chữ."""
     generate_requested = Signal(str)  # source id
     import_requested = Signal()
     export_requested = Signal()
     seek_requested = Signal(int)
     subtitles_changed = Signal()
     style_changed = Signal()
+    back_requested = Signal()
+    next_requested = Signal()
 
     def __init__(self, sources: dict[str, SubtitleSource], parent=None):
-        super().__init__(parent)
+        super().__init__("Sub mới (tuỳ chọn)",
+                         "Sub gốc đã được đọc tự động ở bước 1. Gõ nội dung mới vào cột \"Sub mới\" "
+                         "(double-click ô để sửa) — chữ sẽ được chèn vào đúng vùng mờ của câu đó. "
+                         "Dòng để trống thì chỉ che, không chèn gì. Không cần sub mới thì bỏ qua bước này.",
+                         parent)
+        self._source_id = next(iter(sources))
         self._lines: list[SubtitleLine] = []
         self._loading = False
         self._active_row = -1
         self.position_ms = 0
+        layout = self.body
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(8)
-
-        src_box = QGroupBox("Nguồn sub mới")
-        src_layout = QVBoxLayout(src_box)
         row = QHBoxLayout()
-        self.source_combo = QComboBox()
-        for src in sources.values():
-            self.source_combo.addItem(src.name, src.id)
-        self.btn_generate = accent(QPushButton("Tạo sub"))
-        row.addWidget(self.source_combo, 1)
-        row.addWidget(self.btn_generate)
-        src_layout.addLayout(row)
-        row = QHBoxLayout()
-        self.btn_import = QPushButton("Nhập .srt")
-        self.btn_export = QPushButton("Xuất .srt")
-        row.addWidget(self.btn_import)
-        row.addWidget(self.btn_export)
-        row.addStretch()
-        src_layout.addLayout(row)
-        layout.addWidget(src_box)
+        self.count_label = muted_label()
+        self.btn_file = QPushButton("Tệp sub  ▾")
+        menu = QMenu(self.btn_file)
+        self.act_generate = menu.addAction("Đọc lại sub gốc từ video")
+        menu.addSeparator()
+        self.act_import = menu.addAction("Nhập file .srt…")
+        self.act_export = menu.addAction("Xuất file .srt…")
+        self.btn_file.setMenu(menu)
+        row.addWidget(self.count_label, 1)
+        row.addWidget(self.btn_file)
+        layout.addLayout(row)
 
         self.table = QTableWidget(0, 4)
         self.table.setHorizontalHeaderLabels(["Bắt đầu", "Kết thúc", "Sub gốc", "Sub mới"])
@@ -79,7 +75,7 @@ class SubtitlePanel(QWidget):
             row.addWidget(b)
         row.addStretch()
         layout.addLayout(row)
-        layout.addWidget(muted_label("Double-click mốc thời gian để tua tới dòng đó"))
+        layout.addWidget(muted_label("Double-click mốc thời gian để tua tới dòng đó · dòng đang phát được tô đỏ"))
 
         style_box = QGroupBox("Kiểu chữ sub mới")
         form = QFormLayout(style_box)
@@ -107,9 +103,17 @@ class SubtitlePanel(QWidget):
         form.addRow("Màu chữ", color_row)
         layout.addWidget(style_box)
 
-        self.btn_generate.clicked.connect(lambda: self.generate_requested.emit(self.source_combo.currentData()))
-        self.btn_import.clicked.connect(self.import_requested)
-        self.btn_export.clicked.connect(self.export_requested)
+        self.btn_back = QPushButton("←  Quay lại")
+        self.btn_next = QPushButton("Tiếp: Giọng đọc  →")
+        self.footer.addWidget(self.btn_back)
+        self.footer.addStretch()
+        self.footer.addWidget(self.btn_next)
+
+        self.act_generate.triggered.connect(lambda: self.generate_requested.emit(self._source_id))
+        self.act_import.triggered.connect(self.import_requested)
+        self.act_export.triggered.connect(self.export_requested)
+        self.btn_back.clicked.connect(self.back_requested)
+        self.btn_next.clicked.connect(self.next_requested)
         self.btn_add.clicked.connect(self._add_line)
         self.btn_delete.clicked.connect(self._delete_lines)
         self.btn_set_start.clicked.connect(lambda: self._set_time(COL_START))
@@ -135,12 +139,18 @@ class SubtitlePanel(QWidget):
             self._append_row(line)
         self._loading = False
         self.table.resizeRowsToContents()
-        self.set_enabled(True)
+        self._update_count()
 
     def set_enabled(self, enabled: bool) -> None:
-        for w in (self.btn_generate, self.btn_import, self.btn_export, self.btn_add, self.btn_delete,
-                  self.btn_set_start, self.btn_set_end, self.table):
+        for w in (self.btn_file, self.btn_add, self.btn_delete, self.btn_set_start, self.btn_set_end, self.table):
             w.setEnabled(enabled)
+
+    def _update_count(self) -> None:
+        n = len(self._lines)
+        new = sum(1 for l in self._lines if l.text.strip())
+        self.count_label.setText(f"{n} dòng sub gốc · {new} dòng có sub mới" if n else
+                                 "Chưa có sub — tìm sub ở bước 1 hoặc nhập file .srt")
+        self.act_export.setEnabled(n > 0)
 
     def _append_row(self, line: SubtitleLine) -> None:
         r = self.table.rowCount()
@@ -199,6 +209,7 @@ class SubtitlePanel(QWidget):
             line.text = item.text()
         elif col == COL_ORIGINAL:
             line.original = item.text()
+        self._update_count()
         self.subtitles_changed.emit()
 
     def _on_double_click(self, row: int, col: int) -> None:

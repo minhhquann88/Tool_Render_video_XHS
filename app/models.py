@@ -78,7 +78,7 @@ class SubStyle:
 @dataclass
 class ExportSettings:
     output_dir: Path = OUTPUT_DIR
-    renderer_id: str = "mock"
+    renderer_id: str = "ffmpeg"
     resolution: str = "original"
     apply_blur: bool = True
     burn_subs: bool = True
@@ -87,7 +87,7 @@ class ExportSettings:
     original_volume: int = 20  # %
     uploader_id: str = "mock"
     drive_folder: str = ""
-    auto_upload: bool = True
+    auto_upload: bool = False
 
 
 @dataclass
@@ -111,14 +111,3 @@ class VideoProject:
         if self.local_path:
             return self.local_path.stem
         return self.url
-
-    def step_states(self) -> list[bool]:
-        """Trạng thái 6 bước: cào, làm mờ, sub mới, giọng đọc, render, upload."""
-        return [
-            self.local_path is not None,
-            bool(self.regions),
-            any(line.text for line in self.subtitles),
-            any(line.audio_path for line in self.subtitles),
-            self.output_path is not None,
-            bool(self.drive_link),
-        ]

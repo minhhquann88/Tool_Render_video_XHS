@@ -45,9 +45,9 @@ class QueuePanel(QFrame):
         layout.addWidget(self.links_edit)
 
         row = QHBoxLayout()
-        self.btn_add = accent(QPushButton("Thêm vào hàng chờ"))
+        self.btn_add = accent(QPushButton("Thêm && tải về"))
         self.btn_local = QPushButton("Mở file…")
-        self.btn_local.setToolTip("Mở video có sẵn trên máy để thử chỉnh sửa")
+        self.btn_local.setToolTip("Mở video có sẵn trên máy")
         row.addWidget(self.btn_add, 1)
         row.addWidget(self.btn_local)
         layout.addLayout(row)
@@ -68,7 +68,7 @@ class QueuePanel(QFrame):
         layout.addLayout(cookie_row)
 
         head = QHBoxLayout()
-        head.addWidget(title_label("Hàng chờ"))
+        head.addWidget(title_label("Danh sách video"))
         head.addStretch()
         self.count_label = muted_label("0 video")
         head.addWidget(self.count_label)
@@ -81,8 +81,8 @@ class QueuePanel(QFrame):
         layout.addWidget(self.list, 1)
 
         row2 = QHBoxLayout()
-        self.btn_download = QPushButton("Tải về")
-        self.btn_download.setToolTip("Tải video đang chọn (hoặc tất cả video đang chờ)")
+        self.btn_download = QPushButton("Tải lại")
+        self.btn_download.setToolTip("Tải lại video bị lỗi / chưa tải (đang chọn, hoặc tất cả)")
         self.btn_remove = QPushButton("Xoá")
         row2.addWidget(self.btn_download, 1)
         row2.addWidget(self.btn_remove)

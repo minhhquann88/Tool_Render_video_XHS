@@ -2,6 +2,15 @@
 
 App desktop (Python + PySide6): cào video Xiaohongshu → làm mờ sub gốc → chèn sub mới → lồng tiếng AI → render → upload Google Drive.
 
+## Cách dùng
+
+Cột trái: dán link XHS → **Thêm & tải về** (hoặc **Mở file…**). Cột phải có 4 bước, làm bước nào tuỳ nhu cầu:
+
+1. **Tìm & che sub**: tự tìm sub gốc → vùng mờ theo từng câu. Chỉ cần che sub thì bấm **Xuất video chỉ che sub** là xong.
+2. **Sub mới**: gõ sub mới vào cột "Sub mới" (sub gốc đã được đọc sẵn); dòng trống thì chỉ che.
+3. **Giọng đọc**: chọn giọng AI, tạo audio cho các dòng sub mới.
+4. **Xuất video**: tick phần muốn đưa vào video (phần chưa làm tự bỏ qua) → **Xuất video**.
+
 ## Chạy
 
 ```bash
@@ -40,10 +49,10 @@ Cần cookie đã đăng nhập để tải video. Nút **Cookie…** ở cột 
 | Tải video XHS / RedNote (dùng cookie) | ✅ chạy thật | `app/services/scraper/xhs.py`, `cookies.py` |
 | Preview video, vùng mờ kéo/co giãn | ✅ chạy thật | `app/ui/widgets/video_canvas.py` |
 | Tự động tìm vùng sub (VideoSubFinder + RapidOCR) | ✅ chạy thật | `app/services/subtitle/vsf_pipeline.py`, `vsf.py` |
-| Sub gốc (OCR → .srt) / sửa / nhập-xuất .srt | ✅ OCR thật · dịch / Whisper chờ chốt | `app/services/subtitle/` |
+| Sub gốc (OCR → .srt) / sửa / nhập-xuất .srt | ✅ OCR thật · dịch chờ chốt | `app/services/subtitle/` |
 | Danh sách voice AI + nghe thử | ✅ Edge-TTS thật | `app/services/tts/edge.py` |
 | Tạo audio lồng tiếng từng dòng sub | ✅ Edge-TTS thật | `app/ui/main_window.py` |
-| Render (blur + sub + voice) | 🧪 giả lập · FFmpeg chờ làm | `app/services/render/` |
+| Render: che sub / chèn sub mới / ghép giọng (bật tắt từng phần) | ✅ FFmpeg thật (imageio-ffmpeg) | `app/services/render/ffmpeg.py` |
 | Upload Google Drive | 🧪 giả lập · OAuth chờ làm | `app/services/upload/` |
 
 ## Mở rộng
@@ -65,7 +74,7 @@ app/
   config.py, models.py
   services/   scraper · subtitle · tts · render · upload
   ui/         main_window.py, tasks.py, theme.py
-    panels/   queue · preview · subtitle · voice · export
+    panels/   queue · preview · 4 bước: detect · subtitle · voice · export
     widgets/  video_canvas.py, common.py
   utils/      timefmt.py, srt.py
 data/         downloads · output · cache/tts   (tự tạo khi chạy)

@@ -12,7 +12,7 @@ from app.models import VoiceInfo, VoiceSettings
 from app.services.tts.base import TTSProvider
 from app.ui.tasks import TaskRunner
 from app.ui.theme import accent
-from app.ui.widgets.common import LabeledSlider, muted_label
+from app.ui.widgets.common import LabeledSlider, StepPage, TaskProgress, muted_label
 
 LOCALE_NAMES = {
     "vi-VN": "Tiếng Việt",
@@ -28,12 +28,16 @@ LOCALE_NAMES = {
 ALL = "__all__"
 
 
-class VoicePanel(QWidget):
-    """Tab Giọng đọc: danh sách voice AI, nghe thử, tạo lồng tiếng."""
+class VoicePanel(StepPage):
+    """Bước 3: chọn giọng AI, nghe thử, tạo audio lồng tiếng cho từng dòng sub mới."""
     generate_dub_requested = Signal()
+    back_requested = Signal()
+    next_requested = Signal()
 
     def __init__(self, providers: dict[str, TTSProvider], runner: TaskRunner, log, parent=None):
-        super().__init__(parent)
+        super().__init__("Giọng đọc AI (tuỳ chọn)",
+                         "Đọc cột \"Sub mới\" thành tiếng và ghép vào video đúng mốc thời gian. "
+                         "Không cần lồng tiếng thì bỏ qua bước này.", parent)
         self._providers = providers
         self._runner = runner
         self._log = log
@@ -44,20 +48,17 @@ class VoicePanel(QWidget):
         self._audio = QAudioOutput(self)
         self._player.setAudioOutput(self._audio)
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(8)
+        layout = self.body
 
-        row = QHBoxLayout()
         self.provider_combo = QComboBox()
         for p in providers.values():
             self.provider_combo.addItem(p.name, p.id)
+        self.provider_combo.setVisible(len(providers) > 1)  # chỉ hiện khi có nhiều nguồn giọng
         self.btn_reload = QPushButton("Tải lại")
-        row.addWidget(self.provider_combo, 1)
-        row.addWidget(self.btn_reload)
-        layout.addLayout(row)
+        self.btn_reload.setToolTip("Tải lại danh sách giọng")
 
         row = QHBoxLayout()
+        row.addWidget(self.provider_combo, 2)
         self.lang_combo = QComboBox()
         self.gender_combo = QComboBox()
         self.gender_combo.addItem("Tất cả", ALL)
@@ -68,6 +69,7 @@ class VoicePanel(QWidget):
         row.addWidget(self.lang_combo, 2)
         row.addWidget(self.gender_combo, 1)
         row.addWidget(self.search_edit, 2)
+        row.addWidget(self.btn_reload)
         layout.addLayout(row)
 
         self.table = QTableWidget(0, 3)
@@ -99,15 +101,25 @@ class VoicePanel(QWidget):
         self.sample_edit = QLineEdit("Xin chào, đây là giọng đọc thử cho video của bạn.")
         row = QHBoxLayout()
         self.selected_label = muted_label()
-        self.btn_preview = accent(QPushButton("▶  Nghe thử"))
+        self.btn_preview = QPushButton("▶  Nghe thử")
         row.addWidget(self.selected_label, 1)
         row.addWidget(self.btn_preview)
         lv.addWidget(self.sample_edit)
         lv.addLayout(row)
         layout.addWidget(listen)
 
-        self.btn_dub = QPushButton("Tạo audio lồng tiếng cho toàn bộ sub")
-        layout.addWidget(self.btn_dub)
+        self.progress = TaskProgress()
+        layout.addWidget(self.progress)
+
+        self.btn_back = QPushButton("←  Quay lại")
+        self.btn_dub = accent(QPushButton("Tạo giọng đọc"))
+        self.btn_next = QPushButton("Tiếp: Xuất video  →")
+        self.footer.addWidget(self.btn_back)
+        self.footer.addStretch()
+        self.footer.addWidget(self.btn_dub)
+        self.footer.addWidget(self.btn_next)
+        self.btn_back.clicked.connect(self.back_requested)
+        self.btn_next.clicked.connect(self.next_requested)
 
         self.btn_reload.clicked.connect(lambda: self.reload(force=True))
         self.provider_combo.currentIndexChanged.connect(lambda _: self.reload())
@@ -194,6 +206,12 @@ class VoicePanel(QWidget):
         if items:
             self._selected_id = self.table.item(items[0].row(), 0).data(Qt.UserRole)
             self._update_selected_label()
+
+    def set_line_count(self, n_lines: int, n_done: int) -> None:
+        self.btn_dub.setEnabled(n_lines > 0)
+        self.btn_dub.setText(f"Tạo giọng đọc ({n_lines} dòng)" if n_lines else "Tạo giọng đọc")
+        if not self.progress.running:
+            self.progress.finish(f"✓ Đã có giọng đọc cho {n_done} dòng" if n_done else "")
 
     def _update_selected_label(self) -> None:
         self.selected_label.setText(f"Đang chọn: {self._selected_id}")

@@ -150,6 +150,7 @@ class VideoCanvas(QGraphicsView):
         self._style = SubStyle()
         self._text = ""
         self._show_text = True
+        self._position_ms = 0
         self._set_frame_size(self.DEFAULT_SIZE)
 
     # ----- khung video -----
@@ -212,7 +213,7 @@ class VideoCanvas(QGraphicsView):
             item = BlurRegionItem(reg, rect, self.regions_changed.emit)
             self._scene.addItem(item)
             self._items.append(item)
-        self._refresh_text()
+        self._apply_position()
         if notify:
             self.regions_changed.emit()
 
@@ -228,6 +229,23 @@ class VideoCanvas(QGraphicsView):
         if len(keep) != len(self._items):
             self.regions()  # cập nhật toạ độ trước khi dựng lại
             self.set_regions(keep)
+
+    def set_position(self, ms: int) -> None:
+        """Chỉ hiện vùng mờ đang có hiệu lực tại thời điểm phát (mỗi câu sub có vùng riêng)."""
+        self._position_ms = ms
+        self._apply_position()
+
+    def _is_active(self, reg: BlurRegion) -> bool:
+        return reg.start_ms <= self._position_ms and (reg.end_ms is None or self._position_ms < reg.end_ms)
+
+    def _apply_position(self) -> None:
+        for item in self._items:
+            active = self._is_active(item.region)
+            if item.isVisible() != active:
+                if not active:
+                    item.setSelected(False)
+                item.setVisible(active)
+        self._refresh_text()
 
     def keyPressEvent(self, event):
         if event.key() in (Qt.Key_Delete, Qt.Key_Backspace):
@@ -251,5 +269,9 @@ class VideoCanvas(QGraphicsView):
 
     def _refresh_text(self) -> None:
         text = self._text if self._show_text else ""
+        visible = [item for item in self._items if item.isVisible()]
+        # sub mới đặt vào vùng của câu sub đang chạy; vùng toàn video (cảnh báo, watermark) chỉ làm mờ
+        timed = [item for item in visible if item.region.end_ms is not None]
+        targets = timed or visible
         for item in self._items:
-            item.set_text(text, self._style)
+            item.set_text(text if item in targets else "", self._style)

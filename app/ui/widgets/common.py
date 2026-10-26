@@ -1,11 +1,8 @@
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QColorDialog, QFrame, QHBoxLayout, QLabel, QPushButton, QSlider, QWidget,
+    QColorDialog, QFrame, QHBoxLayout, QLabel, QProgressBar, QPushButton, QSlider, QVBoxLayout, QWidget,
 )
-
-STEPS = ["Cào video", "Làm mờ sub", "Sub mới", "Giọng đọc", "Render", "Upload"]
-
 
 def card() -> QFrame:
     frame = QFrame()
@@ -30,29 +27,92 @@ def repolish(widget: QWidget) -> None:
     widget.style().polish(widget)
 
 
-class StepBar(QWidget):
-    def __init__(self, parent=None):
+class StepNav(QWidget):
+    """Thanh bước bấm được: số thứ tự, ✓ khi xong, gạch chân bước đang mở."""
+    step_clicked = Signal(int)
+
+    def __init__(self, names: list[str], parent=None):
         super().__init__(parent)
+        self._names = names
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(6)
-        self._labels: list[QLabel] = []
-        for i, name in enumerate(STEPS):
-            if i:
-                arrow = QLabel("›")
-                arrow.setObjectName("StepArrow")
-                layout.addWidget(arrow)
-            lbl = QLabel(f"{i + 1}  {name}")
-            lbl.setObjectName("Step")
-            layout.addWidget(lbl)
-            self._labels.append(lbl)
-        self.set_states([False] * len(STEPS))
+        layout.setSpacing(0)
+        self._buttons: list[QPushButton] = []
+        for i in range(len(names)):
+            btn = QPushButton()
+            btn.setObjectName("StepTab")
+            btn.setCheckable(True)
+            btn.setAutoExclusive(True)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.clicked.connect(lambda _=False, i=i: self.step_clicked.emit(i))
+            layout.addWidget(btn, 1)
+            self._buttons.append(btn)
+        self.set_done([False] * len(names))
+        self.set_current(0)
 
-    def set_states(self, done: list[bool]) -> None:
-        active = next((i for i, d in enumerate(done) if not d), None)
-        for i, (lbl, d) in enumerate(zip(self._labels, done)):
-            lbl.setProperty("state", "done" if d else "active" if i == active else "todo")
-            repolish(lbl)
+    def set_current(self, index: int) -> None:
+        self._buttons[index].setChecked(True)
+
+    def set_done(self, done: list[bool]) -> None:
+        for i, (btn, d) in enumerate(zip(self._buttons, done)):
+            name = self._names[i].replace("&", "&&")  # "&" trên nút là phím tắt
+            btn.setText(f"✓  {name}" if d else f"{i + 1}  {name}")
+            btn.setProperty("done", d)
+            repolish(btn)
+
+
+class StepPage(QWidget):
+    """Khung chung của một bước: tiêu đề + mô tả, phần thân, chân trang (nút điều hướng / hành động)."""
+
+    def __init__(self, title: str, description: str, parent=None):
+        super().__init__(parent)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(14, 14, 14, 12)
+        outer.setSpacing(10)
+        outer.addWidget(title_label(title))
+        desc = muted_label(description)
+        desc.setWordWrap(True)
+        outer.addWidget(desc)
+        self.body = QVBoxLayout()
+        self.body.setSpacing(10)
+        outer.addLayout(self.body, 1)
+        self.footer = QHBoxLayout()
+        self.footer.setSpacing(8)
+        outer.addLayout(self.footer)
+
+
+class TaskProgress(QWidget):
+    """Thanh tiến độ + dòng trạng thái của một việc chạy nền (ẩn khi không chạy)."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        self.bar = QProgressBar()
+        self.bar.setRange(0, 100)
+        self.bar.setTextVisible(False)
+        self.bar.setFixedHeight(8)
+        self.label = muted_label()
+        self.label.setWordWrap(True)
+        layout.addWidget(self.bar)
+        layout.addWidget(self.label)
+        self.setVisible(False)
+
+    @property
+    def running(self) -> bool:
+        return not self.isHidden() and not self.bar.isHidden()  # đúng cả khi trang đang bị ẩn
+
+    def update(self, pct: int, msg: str) -> None:
+        self.setVisible(True)
+        self.bar.setVisible(True)
+        self.bar.setValue(pct)
+        self.label.setText(f"{msg}  {pct}%")
+
+    def finish(self, msg: str = "") -> None:
+        self.bar.setVisible(False)
+        self.label.setText(msg)
+        self.setVisible(bool(msg))
 
 
 class ColorButton(QPushButton):

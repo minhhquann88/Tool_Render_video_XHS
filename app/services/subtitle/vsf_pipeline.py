@@ -79,12 +79,14 @@ class VsfRapidPipeline:
         static, frames = self._split_static(frames)
         frames = self._join_frames(frames)
         regions = self._to_regions(static, frames, width, height)
-        lines = [SubtitleLine(f.start_ms, f.end_ms, text=_text(f), original=_text(f)) for f in frames if f.lines]
+        # sub mới để trống: người dùng gõ / nhập vào, tránh chèn lại chữ gốc lên vùng vừa che
+        lines = [SubtitleLine(f.start_ms, f.end_ms, text="", original=_text(f)) for f in frames if f.lines]
 
         srt_path = None
-        if lines:
+        if lines:  # file .srt của sub gốc
             srt_path = OUTPUT_DIR / f"{video_path.stem}.srt"
-            srt_path.write_text(to_srt(lines), encoding="utf-8")
+            srt_path.write_text(to_srt([SubtitleLine(l.start_ms, l.end_ms, text=l.original) for l in lines]),
+                                encoding="utf-8")
         progress(100, "Xong")
         return VsfResult(regions, lines, srt_path, static_texts=[t for _, t in static])
 

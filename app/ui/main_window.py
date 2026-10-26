@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import re
 from datetime import datetime
+from dataclasses import replace
 from functools import partial
 from pathlib import Path
 
 from PySide6.QtCore import QSettings, Qt
 from PySide6.QtWidgets import (
-    QFileDialog, QHBoxLayout, QInputDialog, QMainWindow, QMessageBox, QPlainTextEdit, QSplitter,
-    QTabWidget, QVBoxLayout, QWidget,
+    QFileDialog, QFrame, QHBoxLayout, QInputDialog, QMainWindow, QMessageBox, QPlainTextEdit, QSplitter,
+    QStackedWidget, QVBoxLayout, QWidget,
 )
 
 from app.config import (
@@ -19,16 +20,19 @@ from app.services import build_services
 from app.services.render.base import RenderContext
 from app.services.scraper.base import ScrapedVideo, extract_urls
 from app.services.scraper.cookies import CookieInfo, load_cookie_file, parse_cookies
+from app.ui.panels.detect_panel import DetectPanel
 from app.ui.panels.export_panel import ExportPanel
 from app.ui.panels.preview_panel import PreviewPanel
 from app.ui.panels.queue_panel import QueuePanel
 from app.ui.panels.subtitle_panel import SubtitlePanel
 from app.ui.panels.voice_panel import VoicePanel
 from app.ui.tasks import TaskRunner
-from app.ui.widgets.common import StepBar, muted_label
+from app.ui.widgets.common import StepNav, muted_label
 from app.utils.srt import parse_srt, to_srt
 
 _LOG_COLORS = {"info": "#c9ccd1", "ok": "#3ecf8e", "warn": "#f5a524", "error": "#ff5c5c"}
+STEP_NAMES = ["Tìm & che sub", "Sub mới", "Giọng đọc", "Xuất video"]
+STEP_DETECT, STEP_SUBS, STEP_VOICE, STEP_EXPORT = range(4)
 
 
 class MainWindow(QMainWindow):
@@ -42,6 +46,10 @@ class MainWindow(QMainWindow):
         self.projects: dict[str, VideoProject] = {}
         self.current: VideoProject | None = None
         self._batch: list[VideoProject] = []
+        self._batch_export = None  # ExportSettings dùng cho cả lượt xuất
+        self._batch_running = False
+        self._batch_suffix = ""
+        self._scanning: VideoProject | None = None  # video đang được quét tìm sub
         self._settings = QSettings()
 
         self._build_ui()
@@ -64,33 +72,40 @@ class MainWindow(QMainWindow):
         title = muted_label(APP_NAME)
         title.setObjectName("AppTitle")
         header.addWidget(title)
-        header.addSpacing(8)
-        header.addWidget(muted_label("Cào · làm mờ · lồng tiếng · upload"))
-        header.addStretch()
-        self.step_bar = StepBar()
-        header.addWidget(self.step_bar)
+        header.addSpacing(12)
+        self.video_label = muted_label()
+        header.addWidget(self.video_label, 1)
         root.addLayout(header)
 
         self.queue_panel = QueuePanel()
-        self.preview_panel = PreviewPanel(self.services.detectors)
+        self.preview_panel = PreviewPanel()
+        self.detect_panel = DetectPanel()
         self.subtitle_panel = SubtitlePanel(self.services.subtitle_sources)
         self.voice_panel = VoicePanel(self.services.tts, self.runner, self.log)
         self.export_panel = ExportPanel(self.services.renderers, self.services.uploaders)
 
-        self.tabs = QTabWidget()
-        self.tabs.setMinimumWidth(400)
-        self.tabs.addTab(self.subtitle_panel, "Phụ đề")
-        self.tabs.addTab(self.voice_panel, "Giọng đọc")
-        self.tabs.addTab(self.export_panel, "Xuất && Upload")
+        # cột phải: 4 bước, mỗi bước một trang
+        steps = QFrame()
+        steps.setObjectName("StepPanel")
+        steps.setMinimumWidth(460)
+        sv = QVBoxLayout(steps)
+        sv.setContentsMargins(0, 0, 0, 0)
+        sv.setSpacing(0)
+        self.step_nav = StepNav(STEP_NAMES)
+        self.pages = QStackedWidget()
+        for page in (self.detect_panel, self.subtitle_panel, self.voice_panel, self.export_panel):
+            self.pages.addWidget(page)
+        sv.addWidget(self.step_nav)
+        sv.addWidget(self.pages, 1)
 
         main_split = QSplitter(Qt.Horizontal)
         main_split.addWidget(self.queue_panel)
         main_split.addWidget(self.preview_panel)
-        main_split.addWidget(self.tabs)
+        main_split.addWidget(steps)
         main_split.setStretchFactor(0, 0)
         main_split.setStretchFactor(1, 1)
         main_split.setStretchFactor(2, 0)
-        main_split.setSizes([300, 760, 480])
+        main_split.setSizes([290, 720, 540])
 
         self.log_view = QPlainTextEdit()
         self.log_view.setObjectName("Log")
@@ -101,7 +116,7 @@ class MainWindow(QMainWindow):
         v_split.addWidget(main_split)
         v_split.addWidget(self.log_view)
         v_split.setStretchFactor(0, 1)
-        v_split.setSizes([800, 120])
+        v_split.setSizes([840, 80])
         root.addWidget(v_split, 1)
 
         self.statusBar().showMessage("Sẵn sàng")
@@ -118,9 +133,16 @@ class MainWindow(QMainWindow):
         q.list.currentItemChanged.connect(lambda *_: self._set_current(q.current_id()))
 
         p = self.preview_panel
-        p.detect_requested.connect(self._on_detect)
         p.position_changed.connect(self._on_position)
         p.canvas.regions_changed.connect(self._on_regions_changed)
+
+        self.step_nav.step_clicked.connect(self.go_step)
+        d = self.detect_panel
+        d.detect_requested.connect(self._on_detect)
+        d.quick_export_requested.connect(self._on_blur_export)
+        d.add_region_requested.connect(p.canvas.add_region)
+        d.remove_region_requested.connect(p.canvas.remove_selected)
+        d.next_requested.connect(lambda: self.go_step(STEP_SUBS))
 
         s = self.subtitle_panel
         s.generate_requested.connect(self._on_generate_subs)
@@ -129,11 +151,17 @@ class MainWindow(QMainWindow):
         s.seek_requested.connect(p.seek)
         s.subtitles_changed.connect(self._refresh_steps)
         s.style_changed.connect(lambda: p.canvas.set_sub_style(s.sub_style()))
+        s.back_requested.connect(lambda: self.go_step(STEP_DETECT))
+        s.next_requested.connect(lambda: self.go_step(STEP_VOICE))
 
-        self.voice_panel.generate_dub_requested.connect(self._on_generate_dub)
+        v = self.voice_panel
+        v.generate_dub_requested.connect(self._on_generate_dub)
+        v.back_requested.connect(lambda: self.go_step(STEP_SUBS))
+        v.next_requested.connect(lambda: self.go_step(STEP_EXPORT))
 
         e = self.export_panel
         e.render_requested.connect(self._on_render_current)
+        e.back_requested.connect(lambda: self.go_step(STEP_VOICE))
         e.render_all_requested.connect(self._on_render_all)
         e.connect_requested.connect(self._on_connect_uploader)
 
@@ -158,8 +186,25 @@ class MainWindow(QMainWindow):
         if project is self.current:
             self._refresh_steps()
 
+    def go_step(self, index: int) -> None:
+        self.pages.setCurrentIndex(index)
+        self.step_nav.set_current(index)
+
     def _refresh_steps(self) -> None:
-        self.step_bar.set_states(self.current.step_states() if self.current else [False] * 6)
+        """Cập nhật trạng thái 4 bước + nút bật/tắt theo dữ liệu của video đang chọn."""
+        project = self.current
+        has_video = bool(project and project.local_path)
+        lines = project.subtitles if project else []
+        n_regions = len(project.regions) if project else 0
+        n_text = sum(1 for l in lines if l.text.strip())
+        n_voices = sum(1 for l in lines if l.audio_path)
+        self.step_nav.set_done([n_regions > 0, n_text > 0, n_voices > 0,
+                                bool(project and project.output_path)])
+        self.detect_panel.set_state(has_video, n_regions, len(lines),
+                                    busy=self._scanning is not None)
+        self.voice_panel.set_line_count(n_text if has_video else 0, n_voices)
+        self.export_panel.set_availability(n_regions, n_text, n_voices)
+        self.video_label.setText(f"·  {project.display_name}" if project else "")
 
     def _require_video(self) -> VideoProject | None:
         if self.current and self.current.local_path:
@@ -190,9 +235,10 @@ class MainWindow(QMainWindow):
             self.queue_panel.upsert(project)
             added.append(project)
         if added:
-            self.log(f"Đã thêm {len(added)} link vào hàng chờ.", "ok")
+            self.log(f"Đã thêm {len(added)} link.", "ok")
             if not self.current:
                 self.queue_panel.select(added[0].id)
+            self._download(added)
 
     def _on_open_local(self) -> None:
         files, _ = QFileDialog.getOpenFileNames(self, "Mở video", "", VIDEO_FILTER)
@@ -275,7 +321,10 @@ class MainWindow(QMainWindow):
     def _on_download(self) -> None:
         ids = self.queue_panel.selected_ids()
         targets = [self.projects[i] for i in ids] if ids else list(self.projects.values())
-        targets = [p for p in targets if p.url and p.status in (Status.PENDING, Status.ERROR)]
+        self._download(targets)
+
+    def _download(self, projects: list[VideoProject]) -> None:
+        targets = [p for p in projects if p.url and p.status in (Status.PENDING, Status.ERROR)]
         if not targets:
             self.log("Không có video nào cần tải.", "warn")
             return
@@ -298,6 +347,7 @@ class MainWindow(QMainWindow):
         if project is self.current:
             self.preview_panel.load(project.local_path)
             self.subtitle_panel.set_enabled(True)
+            self._refresh_steps()
 
     def _set_current(self, project_id: str | None) -> None:
         project = self.projects.get(project_id) if project_id else None
@@ -309,31 +359,51 @@ class MainWindow(QMainWindow):
         self.subtitle_panel.set_lines(project.subtitles if project else [])
         self.subtitle_panel.set_enabled(bool(project and project.local_path))
         self.export_panel.set_result(project.output_path if project else None, project.drive_link if project else "")
+        if not self._batch_running:
+            self.export_panel.progress.finish()
         self.preview_panel.canvas.set_sub_style(self.subtitle_panel.sub_style())
         self._refresh_steps()
 
     # --------------------------------------------------------- 2. vùng làm mờ
-    def _on_detect(self, detector_id: str) -> None:
+    def _on_detect(self) -> None:
+        """Quét video: vùng mờ theo từng câu sub + tự điền sub gốc sang bước 2 (một lần quét cho cả hai)."""
         project = self._require_video()
-        if not project:
+        if not project or self._scanning:
             return
-        detector = self.services.detectors[detector_id]
-        self.log(f"[{project.display_name}] Đang tìm vùng sub ({detector.name})…")
-        self.preview_panel.btn_detect.setEnabled(False)
+        detector = next(iter(self.services.detectors.values()))
+        source = next(iter(self.services.subtitle_sources.values()))
+        bar = self.detect_panel.progress
+        self.log(f"[{project.display_name}] Đang tìm sub…")
 
-        def done(regions):
-            self.preview_panel.btn_detect.setEnabled(True)
+        def job(progress):
+            regions = detector.detect(project.local_path, progress)
+            lines = source.generate(project.local_path, regions, 0)  # dùng lại kết quả quét, không quét lại
+            return regions, lines
+
+        def done(result):
+            regions, lines = result
+            self._scanning = None
             project.regions = regions
+            if not any(l.text.strip() for l in project.subtitles):  # không ghi đè sub mới người dùng đã gõ
+                project.subtitles[:] = lines
             if project is self.current:
                 self.preview_panel.canvas.set_regions(regions)
-            self.log(f"[{project.display_name}] Tìm thấy {len(regions)} vùng sub.", "ok")
+                self.subtitle_panel.set_lines(project.subtitles)
+            bar.finish()
+            self._refresh_steps()
+            self.log(f"[{project.display_name}] Tìm thấy {len(lines)} câu sub, {len(regions)} vùng mờ.", "ok")
 
         def failed(msg):
-            self.preview_panel.btn_detect.setEnabled(True)
+            self._scanning = None
+            bar.finish(f"Lỗi: {msg}")
+            self._refresh_steps()
             self.log(f"Tìm sub lỗi: {msg}", "error")
 
-        self.runner.submit(detector.detect, project.local_path, on_result=done, on_error=failed,
-                           on_progress=lambda pct, msg: self.statusBar().showMessage(f"{msg} {pct}%", 3000))
+        self._scanning = project
+        self._refresh_steps()
+        bar.update(0, "Đang chuẩn bị…")
+        self.runner.submit(job, on_result=done, on_error=failed,
+                           on_progress=lambda pct, msg: bar.update(pct, msg))
 
     def _on_regions_changed(self) -> None:
         if self.current:
@@ -342,6 +412,7 @@ class MainWindow(QMainWindow):
 
     def _on_position(self, ms: int) -> None:
         self.subtitle_panel.highlight_at(ms)
+        self.preview_panel.canvas.set_position(ms)
         self.preview_panel.canvas.set_overlay_text(self.subtitle_panel.text_at(ms))
 
     # -------------------------------------------------------------- 3. phụ đề
@@ -349,19 +420,21 @@ class MainWindow(QMainWindow):
         project = self._require_video()
         if not project:
             return
+        if self._scanning:
+            return
         source = self.services.subtitle_sources[source_id]
-        self.log(f"[{project.display_name}] Đang tạo sub ({source.name})…")
+        self.log(f"[{project.display_name}] Đang đọc lại sub gốc…")
 
         def done(lines):
             project.subtitles[:] = lines  # giữ nguyên list đang gắn với bảng
             if project is self.current:
                 self.subtitle_panel.set_lines(project.subtitles)
                 self._refresh_steps()
-            self.log(f"[{project.display_name}] Đã tạo {len(lines)} dòng sub.", "ok")
+            self.log(f"[{project.display_name}] Đã đọc {len(lines)} dòng sub gốc.", "ok")
 
         self.runner.submit(source.generate, project.local_path, list(project.regions),
                            self.preview_panel.duration_ms, on_result=done,
-                           on_error=lambda m: self.log(f"Tạo sub lỗi: {m}", "error"),
+                           on_error=lambda m: self.log(f"Đọc sub lỗi: {m}", "error"),
                            on_progress=lambda pct, msg: self.statusBar().showMessage(f"{msg} {pct}%", 3000))
 
     def _on_import_srt(self) -> None:
@@ -382,7 +455,9 @@ class MainWindow(QMainWindow):
         default = str((project.local_path.with_suffix(".srt")))
         path, _ = QFileDialog.getSaveFileName(self, "Xuất phụ đề", default, "Phụ đề (*.srt)")
         if path:
-            Path(path).write_text(to_srt(project.subtitles), encoding="utf-8")
+            # chưa có sub mới thì xuất sub gốc
+            lines = [replace(l, text=l.text if l.text.strip() else l.original) for l in project.subtitles]
+            Path(path).write_text(to_srt(lines), encoding="utf-8")
             self.log(f"Đã xuất sub ra {path}", "ok")
 
     # ------------------------------------------------------------ 4. giọng đọc
@@ -405,50 +480,84 @@ class MainWindow(QMainWindow):
                 paths[i] = provider.synthesize(text, settings, out_dir / f"line_{i:03d}.mp3")
             return paths
 
+        panel = self.voice_panel
+
         def done(paths):
             for i, path in paths.items():
                 if i < len(project.subtitles):
                     project.subtitles[i].audio_path = path
+            panel.btn_dub.setEnabled(True)
+            panel.progress.finish()
             self._update(project, Status.READY)
             self.log(f"[{project.display_name}] Đã tạo {len(paths)} đoạn lồng tiếng ({settings.voice_id}).", "ok")
 
+        def failed(msg):
+            panel.btn_dub.setEnabled(True)
+            panel.progress.finish(f"Lỗi: {msg}")
+            self._fail(project, "Lồng tiếng", msg)
+
         self._update(project, Status.PROCESSING, 0)
-        self.voice_panel.btn_dub.setEnabled(False)
+        panel.btn_dub.setEnabled(False)
+        panel.progress.update(0, "Đang tạo giọng đọc…")
         self.runner.submit(
-            job,
-            on_result=lambda r: (self.voice_panel.btn_dub.setEnabled(True), done(r)),
-            on_error=lambda m: (self.voice_panel.btn_dub.setEnabled(True), self._fail(project, "Lồng tiếng", m)),
-            on_progress=lambda pct, msg: (self._update(project, progress=pct), self.statusBar().showMessage(msg, 3000)),
+            job, on_result=done, on_error=failed,
+            on_progress=lambda pct, msg: (self._update(project, progress=pct), panel.progress.update(pct, msg)),
         )
 
     # ------------------------------------------------------ 5-6. render + upload
     def _on_render_current(self) -> None:
         project = self._require_video()
         if project:
-            self._batch = [project]
-            self._next_in_batch()
+            self._start_batch([project], self.export_panel.export_settings())
+
+    def _on_blur_export(self) -> None:
+        """Chỉ che sub gốc rồi xuất: giữ nguyên tiếng gốc, không chèn sub / giọng."""
+        project = self._require_video()
+        if not project or self._batch_running:
+            return
+        if not project.regions:
+            self.log("Chưa có vùng mờ nào: bấm 'Tự động tìm sub' hoặc '+ Thêm vùng mờ' trước.", "warn")
+            return
+        export = replace(self.export_panel.export_settings(), apply_blur=True, burn_subs=False,
+                         add_voice=False, keep_original_audio=True)
+        self.go_step(STEP_EXPORT)  # để thấy tiến trình
+        self._start_batch([project], export, suffix="_che-sub")
 
     def _on_render_all(self) -> None:
-        self._batch = [p for p in self.projects.values() if p.local_path and not p.status.busy]
-        if not self._batch:
+        projects = [p for p in self.projects.values() if p.local_path and not p.status.busy]
+        if not projects:
             self.log("Chưa có video nào đã tải để render.", "warn")
             return
-        self.log(f"Chạy hàng loạt {len(self._batch)} video…")
+        self.log(f"Chạy hàng loạt {len(projects)} video…")
+        self._start_batch(projects, self.export_panel.export_settings())
+
+    def _start_batch(self, projects: list[VideoProject], export, suffix: str = "") -> None:
+        self._batch = list(projects)
+        self._batch_export = export
+        self._batch_suffix = suffix
         self._next_in_batch()
 
     def _next_in_batch(self) -> None:
         if not self._batch:
+            self._batch_running = False
             self.export_panel.set_busy(False)
+            self._refresh_steps()
             return
+        self._batch_running = True
         self.export_panel.set_busy(True)
         self._render(self._batch.pop(0))
 
     def _render(self, project: VideoProject) -> None:
-        export = self.export_panel.export_settings()
+        # mỗi video tự bỏ qua phần nó chưa có (vd. xuất tất cả mà có video chưa tạo giọng)
+        base = self._batch_export
+        export = replace(base,
+                         apply_blur=base.apply_blur and bool(project.regions),
+                         burn_subs=base.burn_subs and any(l.text.strip() for l in project.subtitles),
+                         add_voice=base.add_voice and any(l.audio_path for l in project.subtitles))
         ctx = RenderContext(style=self.subtitle_panel.sub_style(), voice=self.voice_panel.settings(), export=export)
         renderer = self.services.renderers[export.renderer_id]
         safe = re.sub(r'[\\/:*?"<>|]+', "_", project.display_name)[:60]
-        out_path = export.output_dir / f"{safe}_{project.id}.mp4"
+        out_path = export.output_dir / f"{safe}_{project.id}{self._batch_suffix}.mp4"
 
         def progress(pct, msg):
             self._update(project, progress=pct)
@@ -464,6 +573,7 @@ class MainWindow(QMainWindow):
 
         def failed(msg):
             self._fail(project, "Render", msg)
+            self.export_panel.progress.finish(f"Lỗi: {msg}")
             self._next_in_batch()
 
         self._update(project, Status.RENDERING, 0)
@@ -493,7 +603,7 @@ class MainWindow(QMainWindow):
 
     def _finish(self, project: VideoProject) -> None:
         self._update(project, Status.DONE, 100)
-        self.export_panel.set_progress(100, f"[{project.display_name}] Hoàn tất")
+        self.export_panel.progress.finish()
         if project is self.current:
             self.export_panel.set_result(project.output_path, project.drive_link)
         self._next_in_batch()

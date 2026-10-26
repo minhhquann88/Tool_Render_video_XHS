@@ -12,10 +12,17 @@ QLabel#AppTitle {{ font-size: 18px; font-weight: 700; color: #ffffff; }}
 QLabel#SectionTitle {{ font-size: 14px; font-weight: 600; color: #ffffff; }}
 QLabel#Muted {{ color: #8a8f98; }}
 
-QLabel#Step {{ padding: 4px 10px; border-radius: 12px; background: #22252b; color: #8a8f98; }}
-QLabel#Step[state="done"] {{ background: #173a2b; color: #3ecf8e; }}
-QLabel#Step[state="active"] {{ background: #3a1820; color: #ff6b80; font-weight: 600; }}
-QLabel#StepArrow {{ color: #4a4f58; }}
+QLabel#Summary {{ font-size: 13px; color: #e6e7ea; padding: 10px 12px; background: #16171c;
+                  border: 1px solid #2a2d34; border-radius: 8px; }}
+QLabel#Summary[ok="true"] {{ color: #3ecf8e; border-color: #1f4a37; background: #12221b; }}
+
+QPushButton#StepTab {{ background: transparent; border: none; border-bottom: 2px solid #2a2d34; border-radius: 0;
+                       padding: 10px 4px; color: #8a8f98; font-weight: 600; }}
+QPushButton#StepTab:hover {{ color: #e6e7ea; background: #22252b; }}
+QPushButton#StepTab[done="true"] {{ color: #3ecf8e; }}
+QPushButton#StepTab:checked {{ color: #ffffff; border-bottom: 2px solid {ACCENT}; background: #22252b; }}
+QPushButton#Big {{ padding: 10px 16px; font-size: 14px; }}
+QFrame#StepPanel {{ background: #1e2026; border: 1px solid #2a2d34; border-radius: 10px; }}
 
 QPushButton {{ background: #2a2d34; border: 1px solid #343842; border-radius: 6px; padding: 6px 12px; color: #e6e7ea; }}
 QPushButton:hover {{ background: #343842; }}
@@ -25,6 +32,7 @@ QPushButton[accent="true"] {{ background: {ACCENT}; border-color: {ACCENT}; colo
 QPushButton[accent="true"]:hover {{ background: #ff4a64; }}
 QPushButton[accent="true"]:disabled {{ background: #5a2630; border-color: #5a2630; color: #b9a0a5; }}
 QPushButton#IconButton {{ padding: 4px; min-width: 30px; }}
+QCheckBox:disabled, QGroupBox:disabled {{ color: #5d626b; }}
 
 QLineEdit, QPlainTextEdit, QSpinBox, QComboBox {{
     background: #121317; border: 1px solid #2c2f36; border-radius: 6px; padding: 5px 8px;

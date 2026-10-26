@@ -2,13 +2,10 @@
 from dataclasses import dataclass
 
 from app.services.render.base import Renderer
-from app.services.render.mock import MockRenderer
+from app.services.render.ffmpeg import FFmpegRenderer
 from app.services.scraper.base import VideoScraper
 from app.services.scraper.xhs import XhsScraper
 from app.services.subtitle.base import RegionDetector, SubtitleSource
-from app.services.subtitle.demo import BottomBandDetector, DemoSubtitleSource
-from app.services.subtitle.rapidocr_detector import RapidOcrRegionDetector
-from app.services.subtitle.stubs import WhisperSource
 from app.services.subtitle.vsf_pipeline import VsfOcrSource, VsfRapidPipeline, VsfRegionDetector
 from app.services.tts.base import TTSProvider
 from app.services.tts.edge import EdgeTTSProvider
@@ -38,9 +35,9 @@ def build_services() -> Services:
     vsf = VsfRapidPipeline()  # dùng chung cho tìm vùng + tạo sub -> chỉ quét video 1 lần
     return Services(
         scrapers=[XhsScraper()],
-        detectors=_by_id([VsfRegionDetector(vsf), RapidOcrRegionDetector(), BottomBandDetector()]),
-        subtitle_sources=_by_id([VsfOcrSource(vsf), DemoSubtitleSource(), WhisperSource()]),
+        detectors=_by_id([VsfRegionDetector(vsf)]),
+        subtitle_sources=_by_id([VsfOcrSource(vsf)]),
         tts=_by_id([EdgeTTSProvider()]),
-        renderers=_by_id([MockRenderer()]),
+        renderers=_by_id([FFmpegRenderer()]),
         uploaders=_by_id([MockUploader(), GoogleDriveUploader()]),
     )
