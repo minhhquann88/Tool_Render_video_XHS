@@ -4,12 +4,17 @@ App desktop (Python + PySide6): cào video Xiaohongshu → làm mờ sub gốc �
 
 ## Cách dùng
 
-Cột trái: dán link XHS → **Thêm & tải về** (hoặc **Mở file…**). Cột phải có 4 bước, làm bước nào tuỳ nhu cầu:
+Cột trái: dán link XHS → **Thêm & tải về** (hoặc **Mở file…**). Cột phải chọn mục tiêu cho video, app chỉ hiện các bước cần cho mục tiêu đó:
 
-1. **Tìm & che sub**: tự tìm sub gốc → vùng mờ theo từng câu. Chỉ cần che sub thì bấm **Xuất video chỉ che sub** là xong.
-2. **Sub mới**: gõ sub mới vào cột "Sub mới" (sub gốc đã được đọc sẵn); dòng trống thì chỉ che.
-3. **Giọng đọc**: chọn giọng AI, tạo audio cho các dòng sub mới.
-4. **Xuất video**: tick phần muốn đưa vào video (phần chưa làm tự bỏ qua) → **Xuất video**.
+| Mục tiêu | Các bước |
+|---|---|
+| Chỉ che sub | Tìm & che sub gốc → Xuất video |
+| Thêm sub Việt | Tìm & che sub gốc → Dịch sub → Xuất video |
+| Việt hoá trọn gói | Tìm & che sub gốc → Dịch sub → Lồng tiếng AI → Xuất video |
+
+Bấm từng bước, hoặc **Làm tự động** để chạy lần lượt các bước còn lại (**Làm cho cả N video** áp dụng cho cả danh sách).
+**Xem & sửa sub** mở trình sửa sub toàn cửa sổ: sửa câu, chỉnh thời gian, xoá câu, dịch lại hoặc rút gọn câu quá dài.
+Cookie XHS, Gemini API key và Google Drive nằm trong **Cài đặt** (góc trên phải).
 
 ## Chạy
 
@@ -32,7 +37,7 @@ Cần bản build sẵn Windows x64 (`VideoSubFinder_6.10_x64.zip` trên SourceF
 
 ## Cookie XHS
 
-Cần cookie đã đăng nhập để tải video. Nút **Cookie…** ở cột trái nhận:
+Cần cookie đã đăng nhập để tải video. **Cài đặt › Cookie Xiaohongshu** nhận:
 
 - File Netscape `cookie.txt` (xuất từ extension "Get cookies.txt"), hoặc file JSON (Cookie-Editor)
 - Chuỗi dán trực tiếp `a1=…; web_session=…`
@@ -49,11 +54,12 @@ Cần cookie đã đăng nhập để tải video. Nút **Cookie…** ở cột 
 | Tải video XHS / RedNote (dùng cookie) | ✅ chạy thật | `app/services/scraper/xhs.py`, `cookies.py` |
 | Preview video, vùng mờ kéo/co giãn | ✅ chạy thật | `app/ui/widgets/video_canvas.py` |
 | Tự động tìm vùng sub (VideoSubFinder + RapidOCR) | ✅ chạy thật | `app/services/subtitle/vsf_pipeline.py`, `vsf.py` |
-| Sub gốc (OCR → .srt) / sửa / nhập-xuất .srt | ✅ OCR thật · dịch chờ chốt | `app/services/subtitle/` |
-| Danh sách voice AI + nghe thử | ✅ Edge-TTS thật | `app/services/tts/edge.py` |
-| Tạo audio lồng tiếng từng dòng sub | ✅ Edge-TTS thật | `app/ui/main_window.py` |
+| Sub gốc (OCR → .srt) / sửa | ✅ OCR thật | `app/services/subtitle/` |
+| Dịch sub gốc → sub mới (subtrans, Gemini 2 lượt) | ✅ cần Gemini API key (aistudio.google.com/apikey) | `app/services/translate/subtrans.py`, `app/vendor/subtrans/` |
+| Danh sách voice AI + nghe thử | ✅ VieNeu-TTS v3 Turbo (offline) | `app/services/tts/vieneu.py` |
+| Tạo audio lồng tiếng từng dòng sub | ✅ VieNeu-TTS v3 Turbo (offline) | `app/ui/main_window.py` |
 | Render: che sub / chèn sub mới / ghép giọng (bật tắt từng phần) | ✅ FFmpeg thật (imageio-ffmpeg) | `app/services/render/ffmpeg.py` |
-| Upload Google Drive | 🧪 giả lập · OAuth chờ làm | `app/services/upload/` |
+| Upload Google Drive | ✅ OAuth (client_secret.json cạnh main.py), quyền drive.file | `app/services/upload/gdrive.py` |
 
 ## Mở rộng
 
@@ -72,10 +78,12 @@ Mọi hàm service nhận tham số `progress(pct, msg)` và chạy ở thread n
 main.py
 app/
   config.py, models.py
-  services/   scraper · subtitle · tts · render · upload
-  ui/         main_window.py, tasks.py, theme.py
-    panels/   queue · preview · 4 bước: detect · subtitle · voice · export
+  services/   scraper · subtitle · translate · tts · render · upload
+  ui/         main_window.py, workflow.py (mục tiêu → bước, trạng thái bước), tasks.py, theme.py
+    panels/   queue · preview · workflow_panel · sub_editor · settings_dialog
+    steps/    thân từng bước: detect · translate · voice · export
     widgets/  video_canvas.py, common.py
   utils/      timefmt.py, srt.py
+  vendor/     subtrans (bản chép có sửa từ github.com/lepinkainen/subtrans, GPL-3)
 data/         downloads · output · cache/tts   (tự tạo khi chạy)
 ```

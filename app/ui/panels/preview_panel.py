@@ -3,12 +3,9 @@ from pathlib import Path
 from PySide6.QtCore import Qt, QUrl, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
-from PySide6.QtWidgets import (
-    QCheckBox, QFrame, QHBoxLayout, QLabel, QPushButton, QSlider, QStyle,
-    QVBoxLayout,
-)
+from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QSlider, QStyle, QVBoxLayout
 
-from app.ui.widgets.common import muted_label, title_label
+from app.ui.widgets.common import Segmented, muted_label, title_label
 from app.ui.widgets.video_canvas import VideoCanvas
 from app.utils.timefmt import ms_to_clock
 
@@ -21,17 +18,18 @@ class PreviewPanel(QFrame):
         super().__init__(parent)
         self.setObjectName("Card")
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(8)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(10)
 
         head = QHBoxLayout()
         head.addWidget(title_label("Xem trước"))
         self.info_label = muted_label()
         head.addWidget(self.info_label)
         head.addStretch()
-        self.chk_show_sub = QCheckBox("Hiện sub mới")
-        self.chk_show_sub.setChecked(True)
-        head.addWidget(self.chk_show_sub)
+        self.view = Segmented([("Bản gốc", "orig"), ("Kết quả", "result")])
+        self.view.set_value("result")
+        self.view.setToolTip("Kết quả: hiện vùng che và sub mới như khi xuất video")
+        head.addWidget(self.view)
         layout.addLayout(head)
 
         self.canvas = VideoCanvas()
@@ -54,19 +52,23 @@ class PreviewPanel(QFrame):
         controls.addWidget(self.volume)
         layout.addLayout(controls)
 
-        hint = muted_label("Space: phát/dừng · vùng mờ chỉ hiện đúng lúc câu sub xuất hiện")
-        layout.addWidget(hint)
 
         self.player = QMediaPlayer(self)
         self.audio = QAudioOutput(self)
         self.audio.setVolume(0.7)
         self.player.setAudioOutput(self.audio)
         self.player.setVideoOutput(self.canvas.video_item)
+        # tiếng đã ghép giọng AI (nghe thử): phát song song, bám theo vị trí của video, thay tiếng gốc ở chế độ Kết quả
+        self.dub = QMediaPlayer(self)
+        self.dub_audio = QAudioOutput(self)
+        self.dub_audio.setVolume(0.7)
+        self.dub.setAudioOutput(self.dub_audio)
+        self._dub_path: Path | None = None
 
         self.btn_play.clicked.connect(self.toggle_play)
-        self.chk_show_sub.toggled.connect(self.canvas.set_show_text)
+        self.view.changed.connect(self._on_view)
         self.slider.sliderMoved.connect(self.player.setPosition)
-        self.volume.valueChanged.connect(lambda v: self.audio.setVolume(v / 100))
+        self.volume.valueChanged.connect(lambda v: (self.audio.setVolume(v / 100), self.dub_audio.setVolume(v / 100)))
         self.player.positionChanged.connect(self._on_position)
         self.player.durationChanged.connect(self._on_duration)
         self.player.playbackStateChanged.connect(self._on_state)
@@ -85,6 +87,7 @@ class PreviewPanel(QFrame):
         return self.player.position()
 
     def load(self, path: Path | None) -> None:
+        self.set_dub_audio(None)
         self.player.stop()
         if path:
             self.player.setSource(QUrl.fromLocalFile(str(path)))
@@ -108,8 +111,45 @@ class PreviewPanel(QFrame):
 
     def seek(self, ms: int) -> None:
         self.player.setPosition(ms)
+        if self._dub_path:
+            self.dub.setPosition(ms)
+
+    # ----- nghe thử giọng AI -----
+    @property
+    def dub_path(self) -> Path | None:
+        return self._dub_path
+
+    def set_dub_audio(self, path: Path | None) -> None:
+        """Gắn tiếng đã ghép giọng AI (None = bỏ, quay về tiếng gốc của video)."""
+        self._dub_path = path
+        self.dub.stop()
+        self.dub.setSource(QUrl())
+        if path:
+            self.dub.setSource(QUrl.fromLocalFile(str(path)))
+            self.dub.setPosition(self.player.position())
+            if self.player.playbackState() == QMediaPlayer.PlayingState:
+                self.dub.play()
+        self._apply_audio()
+
+    def show_result(self) -> None:
+        self.view.set_value("result")
+        self._on_view("result")
+
+    def _dub_active(self) -> bool:
+        return self._dub_path is not None and self.view.value() == "result"
+
+    def _apply_audio(self) -> None:
+        on = self._dub_active()
+        self.audio.setMuted(on)
+        self.dub_audio.setMuted(not on)
+
+    def _on_view(self, value) -> None:
+        self.canvas.set_show_overlays(value == "result")
+        self._apply_audio()
 
     def _on_position(self, ms: int) -> None:
+        if self._dub_path and self.dub.playbackState() == QMediaPlayer.PlayingState                 and abs(self.dub.position() - ms) > 250:
+            self.dub.setPosition(ms)  # lệch (tua / giật hình) -> kéo tiếng về khớp hình
         if not self.slider.isSliderDown():
             self.slider.setValue(ms)
         self.time_label.setText(f"{ms_to_clock(ms)} / {ms_to_clock(self.player.duration())}")
@@ -120,5 +160,11 @@ class PreviewPanel(QFrame):
         self.time_label.setText(f"{ms_to_clock(self.player.position())} / {ms_to_clock(ms)}")
 
     def _on_state(self, state) -> None:
+        if self._dub_path:
+            if state == QMediaPlayer.PlayingState:
+                self.dub.setPosition(self.player.position())
+                self.dub.play()
+            else:
+                self.dub.pause()
         icon = QStyle.SP_MediaPause if state == QMediaPlayer.PlayingState else QStyle.SP_MediaPlay
         self.btn_play.setIcon(self.style().standardIcon(icon))

@@ -1,5 +1,6 @@
 import json
 import re
+import time
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
@@ -19,6 +20,7 @@ _COOKIE_DOMAINS = (".xiaohongshu.com", ".rednote.com")
 _UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
        "(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36")
 _CHUNK = 256 * 1024
+_RETRY_WAITS = (3, 8)  # giây chờ trước mỗi lần mở lại trang khi chưa có dữ liệu bài viết
 
 
 class XhsScraper(VideoScraper):
@@ -47,7 +49,7 @@ class XhsScraper(VideoScraper):
 
     def download(self, url: str, dest_dir: Path, progress: ProgressFn = no_progress) -> ScrapedVideo:
         if not self._cookies:
-            raise ValueError("chưa gắn cookie XHS (bấm 'Cookie…' ở cột trái)")
+            raise ValueError("chưa gắn cookie XHS (Cài đặt › Cookie Xiaohongshu)")
         session = self._session()
 
         progress(0, "Đang mở bài viết…")
@@ -70,6 +72,19 @@ class XhsScraper(VideoScraper):
         if not match:
             raise ValueError(f"không đọc được ID bài viết từ {final_url}")
         note = _find_note(_parse_state(resp.text), match.group(1))
+        for wait in _RETRY_WAITS:
+            if note:
+                break
+            # XHS thỉnh thoảng trả trang không kèm dữ liệu bài (chặn tạm khi gọi dồn dập) -> chờ rồi mở lại
+            progress(0, f"XHS chưa trả dữ liệu bài viết, thử lại sau {wait}s…")
+            time.sleep(wait)
+            resp = session.get(final_url, timeout=20)
+            resp.raise_for_status()
+            note = _find_note(_parse_state(resp.text), match.group(1))
+        if not note:
+            raise ValueError("XHS không trả dữ liệu bài viết sau nhiều lần thử"
+                             f"{_server_error(_parse_state(resp.text))} — bài có thể đã bị xoá / ẩn, cookie không có "
+                             "quyền xem, hoặc đang bị chặn tạm thời (đợi vài phút rồi bấm Tải lại)")
         if note.get("type") != "video":
             raise ValueError("bài viết này là ảnh, không phải video")
 
@@ -105,12 +120,19 @@ def _parse_state(html: str) -> dict:
 
 
 def _find_note(state: dict, note_id: str) -> dict:
+    """Dữ liệu bài viết trong trang; trang không kèm dữ liệu -> {}."""
     detail_map = (state.get("note") or {}).get("noteDetailMap") or {}
     entry = detail_map.get(note_id) or next(iter(detail_map.values()), None)
-    note = (entry or {}).get("note") or {}
-    if not note:
-        raise ValueError("bài viết không tồn tại, đã bị xoá, hoặc cookie không có quyền xem")
-    return note
+    return (entry or {}).get("note") or {}
+
+
+def _server_error(state: dict) -> str:
+    """Lý do XHS ghi trong trang (serverRequestInfo), vd " (mã -510001: 笔记不存在)"."""
+    info = (state.get("note") or {}).get("serverRequestInfo") or {}
+    code, msg = info.get("errorCode"), (info.get("errMsg") or "").strip()
+    if not code and not msg:
+        return ""
+    return f" (mã {code}: {msg})" if msg else f" (mã {code})"
 
 
 def _stream_urls(note: dict) -> list[str]:

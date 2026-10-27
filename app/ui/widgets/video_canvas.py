@@ -37,6 +37,13 @@ class BlurRegionItem(QGraphicsRectItem):
         self.setPen(pen)
         self.setBrush(QBrush(QColor(190, 195, 205, 110)))  # mô phỏng hiệu ứng mờ
 
+        # khung nền sau chữ (SubStyle.bg_box), tạo trước text_item để nằm dưới chữ
+        self.bg_item = QGraphicsRectItem(self)
+        self.bg_item.setPen(Qt.NoPen)
+        self.bg_item.setAcceptedMouseButtons(Qt.NoButton)
+        self.bg_item.setVisible(False)
+        self._bg_on = False
+
         self.text_item = QGraphicsTextItem(self)
         self.text_item.setAcceptedMouseButtons(Qt.NoButton)
         self.text_item.document().setDocumentMargin(4)
@@ -104,6 +111,12 @@ class BlurRegionItem(QGraphicsRectItem):
         self.text_item.setFont(font)
         self.text_item.setDefaultTextColor(QColor(style.color))
         self._shadow.setColor(QColor(style.outline_color))
+        self._shadow.setEnabled(not style.bg_box)  # có khung nền thì chữ không viền (giống lúc xuất video)
+        bg = QColor(style.bg_color)
+        bg.setAlphaF(style.bg_opacity / 100)
+        self.bg_item.setBrush(bg)
+        self._bg_on = style.bg_box and bool(text.strip())
+        self.bg_item.setVisible(self._bg_on)
         self.text_item.setPlainText(text)
         self.layout_text()
 
@@ -112,6 +125,9 @@ class BlurRegionItem(QGraphicsRectItem):
         self.text_item.setTextWidth(r.width())
         h = self.text_item.boundingRect().height()
         self.text_item.setPos(0, (r.height() - h) / 2)
+        if self._bg_on:  # khung ôm sát chữ, căn giữa như chữ
+            w = min(r.width(), self.text_item.document().idealWidth())
+            self.bg_item.setRect(QRectF((r.width() - w) / 2, (r.height() - h) / 2, w, h))
 
     def scene_rect(self) -> QRectF:
         return QRectF(self.pos(), self.rect().size())
@@ -150,6 +166,7 @@ class VideoCanvas(QGraphicsView):
         self._style = SubStyle()
         self._text = ""
         self._show_text = True
+        self._show_overlays = True
         self._position_ms = 0
         self._set_frame_size(self.DEFAULT_SIZE)
 
@@ -238,9 +255,14 @@ class VideoCanvas(QGraphicsView):
     def _is_active(self, reg: BlurRegion) -> bool:
         return reg.start_ms <= self._position_ms and (reg.end_ms is None or self._position_ms < reg.end_ms)
 
+    def set_show_overlays(self, show: bool) -> None:
+        """False = xem bản gốc: ẩn vùng mờ và sub mới."""
+        self._show_overlays = show
+        self._apply_position()
+
     def _apply_position(self) -> None:
         for item in self._items:
-            active = self._is_active(item.region)
+            active = self._show_overlays and self._is_active(item.region)
             if item.isVisible() != active:
                 if not active:
                     item.setSelected(False)

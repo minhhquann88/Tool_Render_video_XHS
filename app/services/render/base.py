@@ -20,3 +20,8 @@ class Renderer(ABC):
     @abstractmethod
     def render(self, project: VideoProject, ctx: RenderContext, out_path: Path,
                progress: ProgressFn = no_progress) -> Path: ...
+
+    def render_audio(self, project: VideoProject, ctx: RenderContext, out_path: Path,
+                     progress: ProgressFn = no_progress) -> Path:
+        """Chỉ dựng tiếng (giọng AI + nhạc nền) như lúc xuất, để nghe thử trên khung xem trước."""
+        raise NotImplementedError(f"{self.name} chưa hỗ trợ nghe thử giọng")

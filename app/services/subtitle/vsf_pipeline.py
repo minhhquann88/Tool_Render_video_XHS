@@ -7,6 +7,7 @@ Một lần chạy phục vụ cả nút "Tự động tìm sub" lẫn "Tạo su
 """
 from __future__ import annotations
 
+import math
 import shutil
 import threading
 import uuid
@@ -18,7 +19,7 @@ from app.config import OUTPUT_DIR, VSF_WORK_DIR
 from app.models import BlurRegion, SubtitleLine
 from app.services.common import ProgressFn, no_progress
 from app.services.subtitle.base import RegionDetector, SubtitleSource
-from app.services.subtitle.geometry import Rect, iou, merge_same_line, pad, union
+from app.services.subtitle.geometry import Rect, iou, merge_same_line, pad, union, v_overlap
 from app.services.subtitle.vsf import VsfImage, list_images, run_vsf
 from app.utils.srt import to_srt
 
@@ -41,16 +42,22 @@ class VsfResult:
 
 class VsfRapidPipeline:
     def __init__(self, top: float = 0.75, bottom: float = 0.03, min_score: float = 0.8,
-                 static_ratio: float = 0.8, pad_ratio: float = 0.3, join_gap_ms: int = 300,
-                 keep_work_dir: bool = False):
+                 static_ratio: float = 0.8, pad_ratio: float = 0.3, join_gap_ms: int = 300, same_text_gap_ms: int = 1500,
+                 max_line_h: float = 0.08, max_off_center: float = 0.12, keep_work_dir: bool = False):
         self.top = top                    # dải VSF quét, tỉ lệ chiều cao tính từ đáy khung
         self.bottom = bottom
         self.min_score = min_score        # ngưỡng tin cậy của OCR
         self.static_ratio = static_ratio  # dòng có mặt ở >= tỉ lệ này số ảnh -> chữ cố định (cảnh báo, watermark…)
         self.pad_ratio = pad_ratio        # nới vùng mờ theo chiều cao chữ
         self.join_gap_ms = join_gap_ms    # 2 ảnh liền nhau cùng chữ cách nhau ít hơn mức này -> gộp
+        self.same_text_gap_ms = same_text_gap_ms  # chữ giống hệt (sub nháy mất rồi hiện lại) -> gộp dù cách xa hơn
+        # 1 dòng sub cao ~2-5% khung; box cao hơn mức này là OCR nhận nhầm hình (vd. cái bát thành chữ "9")
+        self.max_line_h = max_line_h
+        # sub luôn căn giữa; dòng ngắn lệch hẳn sang bên là chữ trên đồ vật (bao bì, biển hiệu), không phải sub
+        self.max_off_center = max_off_center
         self.keep_work_dir = keep_work_dir
         self._engine = None
+        self._strip_engine = None
         self._cache: dict[tuple[str, float], VsfResult] = {}
         self._lock = threading.Lock()
 
@@ -61,6 +68,12 @@ class VsfRapidPipeline:
             if key not in self._cache:
                 self._cache[key] = self._run(video_path, progress)
             return self._cache[key]
+
+    def forget(self, video_path: Path) -> None:
+        with self._lock:
+            path = str(video_path.resolve())
+            for key in [k for k in self._cache if k[0] == path]:
+                del self._cache[key]
 
     # ------------------------------------------------------------------ các bước
     def _run(self, video_path: Path, progress: ProgressFn) -> VsfResult:
@@ -96,6 +109,15 @@ class VsfRapidPipeline:
             self._engine = RapidOCR(params={"Global.log_level": "error"})
         return self._engine
 
+    def _get_strip_engine(self):
+        """Bộ tìm chữ cho dải hẹp: không phóng ảnh (mặc định phóng cạnh ngắn lên 736px -> dải 83px bị phóng ~9 lần,
+        mỗi dải mất ~1s). Chỉ dùng để tìm vị trí; nhận dạng chữ vẫn qua bộ chính."""
+        if self._strip_engine is None:
+            from rapidocr import RapidOCR
+            self._strip_engine = RapidOCR(params={"Global.log_level": "error", "Det.limit_type": "max",
+                                                  "Det.limit_side_len": 960})
+        return self._strip_engine
+
     def _ocr(self, images: list[VsfImage], width: int, height: int, progress: ProgressFn) -> list[_Frame]:
         if not images:
             return []
@@ -103,25 +125,87 @@ class VsfRapidPipeline:
         engine = self._get_engine()
         frames = []
         for i, im in enumerate(images, 1):
-            res = engine(str(im.path), use_cls=False)
             # VSF ghi kích thước khung gốc vào tên file; ưu tiên số đó, dự phòng bằng kích thước đọc từ video
             fw, fh = im.frame_w or width, im.frame_h or height
-            items = []
-            if res.boxes is not None:
-                for box, txt, score in zip(res.boxes, res.txts, res.scores):
-                    if score < self.min_score or not txt.strip():
-                        continue
-                    x0, y0 = map(float, box.min(axis=0))
-                    x1, y1 = map(float, box.max(axis=0))
-                    rect = (max(0.0, (x0 + im.xmin) / fw), max(0.0, (y0 + im.ymin) / fh),
-                            min(1.0, (x1 + im.xmin) / fw), min(1.0, (y1 + im.ymin) / fh))
-                    if (rect[3] - rect[1]) < 0.012:  # chữ quá nhỏ, thường là nhiễu
-                        continue
-                    items.append((rect, txt.strip()))
-            lines = sorted(merge_same_line(items, fw, fh), key=lambda it: it[0][1])
+            items, noisy_rows = self._read(engine, str(im.path), im.xmin, im.ymin, fw, fh)
+            if noisy_rows:
+                # có chữ nghiêng / box quá to (bao bì, biển hiệu): OCR dễ gộp luôn câu sub nằm chồng lên thành 1 box
+                # nghiêng rồi đọc sai -> đọc lại theo dải ngang ở đoạn đó, câu sub nằm ngang sẽ tách ra được
+                items += self._read_strips(engine, im, fw, fh, noisy_rows)
+            items = _dedupe(items)
+            lines = sorted((it for it in merge_same_line(items, fw, fh) if self._is_sub_line(it[0])),
+                           key=lambda it: it[0][1])
             frames.append(_Frame(im.start_ms, im.end_ms, lines))
             progress(70 + int(i / len(images) * 27), f"OCR {i}/{len(images)} câu sub…")
         return frames
+
+    def _read(self, engine, image, dx: float, dy: float, fw: float, fh: float
+              ) -> tuple[list[tuple[Rect, str, float]], tuple[float, float] | None]:
+        """OCR cả ảnh -> (các dòng nằm ngang hợp lệ, đoạn chiều cao (px trong ảnh) có box nghiêng / quá cao)."""
+        # ghi rõ cả 3 cờ: RapidOCR giữ cờ của lần gọi trước (lần nhận dạng riêng ở _read_strips tắt use_det)
+        res = engine(image, use_det=True, use_cls=False, use_rec=True)
+        items, rows = [], None
+        if res.boxes is None:
+            return items, rows
+        for box, txt, score in zip(res.boxes, res.txts, res.scores):
+            x0, y0 = map(float, box.min(axis=0))
+            x1, y1 = map(float, box.max(axis=0))
+            if _tilt(box) > _MAX_TILT or (y1 - y0) / fh > self.max_line_h:  # sub luôn nằm ngang, 1 dòng không cao vậy
+                rows = (min(rows[0], y0), max(rows[1], y1)) if rows else (y0, y1)
+                continue
+            if score < self.min_score or not txt.strip():
+                continue
+            rect = (max(0.0, (x0 + dx) / fw), max(0.0, (y0 + dy) / fh),
+                    min(1.0, (x1 + dx) / fw), min(1.0, (y1 + dy) / fh))
+            if (rect[3] - rect[1]) < 0.012:  # chữ quá nhỏ, thường là nhiễu
+                continue
+            items.append((rect, txt.strip(), float(score)))
+        return items, rows
+
+    def _read_strips(self, engine, im: VsfImage, fw: float, fh: float,
+                     rows: tuple[float, float]) -> list[tuple[Rect, str, float]]:
+        """Cắt đoạn có chữ nghiêng thành dải ngang hẹp chồng nửa nhau; mỗi dải chỉ tìm vị trí chữ, rồi chỉ nhận dạng
+        khung nằm ngang, trọn trong dải, có dáng sub (mẩu chữ nghiêng bị bỏ trước khi nhận dạng -> nhanh)."""
+        import cv2
+        import numpy as np
+
+        img = cv2.imdecode(np.fromfile(str(im.path), dtype=np.uint8), cv2.IMREAD_COLOR)
+        if img is None:
+            return []
+        h = img.shape[0]
+        # dải hẹp (~2 lần 1 dòng sub thường) để chữ nghiêng xung quanh bị cắt vụn, không gộp được với câu sub
+        strip = max(40, int(fh * _STRIP_RATIO))
+        det = self._get_strip_engine()
+        out = []
+        first = max(0, int(rows[0]) - strip // 2)
+        last = min(h, int(rows[1]) + strip // 2)
+        for top in range(first, max(first + 1, last - strip // 2), strip // 2):
+            part = img[top:top + strip]
+            res = det(part, use_det=True, use_cls=False, use_rec=False)
+            if res.boxes is None:
+                continue
+            for box in res.boxes:
+                x0, y0 = map(float, box.min(axis=0))
+                x1, y1 = map(float, box.max(axis=0))
+                if _tilt(box) > _MAX_TILT or y0 <= 2 or y1 >= part.shape[0] - 2:  # nghiêng / bị cắt dở ở mép dải
+                    continue
+                rect = ((x0 + im.xmin) / fw, (y0 + im.ymin + top) / fh,
+                        (x1 + im.xmin) / fw, (y1 + im.ymin + top) / fh)
+                if (rect[3] - rect[1]) < 0.012 or not self._is_sub_line(rect):
+                    continue
+                crop = part[max(0, int(y0) - 2):int(y1) + 3, max(0, int(x0) - 2):int(x1) + 3]
+                rec = engine(crop, use_det=False, use_cls=False, use_rec=True)
+                txt, score = (rec.txts[0], float(rec.scores[0])) if rec.txts else ("", 0.0)
+                if score >= self.min_score and txt.strip():
+                    out.append((rect, txt.strip(), score))
+        return out
+
+    def _is_sub_line(self, rect: Rect) -> bool:
+        x0, y0, x1, y1 = rect
+        if y1 - y0 > self.max_line_h:
+            return False
+        centered = abs((x0 + x1) / 2 - 0.5) <= self.max_off_center
+        return centered or x1 - x0 >= 0.5  # dòng dài gần hết bề ngang: vẫn giữ dù lệch tâm
 
     def _split_static(self, frames: list[_Frame]) -> tuple[list[tuple[Rect, str]], list[_Frame]]:
         """Tách chữ cố định (xuất hiện ở hầu hết các ảnh, cùng chỗ, cùng nội dung) khỏi sub."""
@@ -146,13 +230,16 @@ class VsfRapidPipeline:
         return static, kept
 
     def _join_frames(self, frames: list[_Frame]) -> list[_Frame]:
-        """VSF đôi khi tách một câu thành 2 ảnh liền nhau -> gộp lại."""
+        """VSF đôi khi tách một câu thành 2 ảnh liền nhau -> gộp lại (nếu không, câu bị dịch + đọc 2 lần)."""
         out: list[_Frame] = []
         for f in frames:
             if not f.lines:
                 continue
             prev = out[-1] if out else None
-            if prev and f.start_ms - prev.end_ms <= self.join_gap_ms and _similar(_text(prev), _text(f)):
+            gap = f.start_ms - prev.end_ms if prev else 0
+            same = prev and _text(prev).strip() == _text(f).strip()
+            if prev and ((gap <= self.join_gap_ms and _similar(_text(prev), _text(f)))
+                         or (same and gap <= self.same_text_gap_ms)):
                 prev.end_ms = max(prev.end_ms, f.end_ms)
                 if len(prev.lines) == len(f.lines):
                     prev.lines = [(union(a[0], b[0]), a[1]) for a, b in zip(prev.lines, f.lines)]
@@ -167,11 +254,31 @@ class VsfRapidPipeline:
             x0, y0, x1, y1 = pad(rect, self.pad_ratio, width, height)
             regions.append(BlurRegion(x=x0, y=y0, w=x1 - x0, h=y1 - y0, start_ms=0, end_ms=None))
         for f in frames:
-            for rect, _ in f.lines:
+            for rect, txt in f.lines:
                 x0, y0, x1, y1 = pad(rect, self.pad_ratio, width, height)
-                regions.append(BlurRegion(x=x0, y=y0, w=x1 - x0, h=y1 - y0, start_ms=f.start_ms, end_ms=f.end_ms))
+                regions.append(BlurRegion(x=x0, y=y0, w=x1 - x0, h=y1 - y0, start_ms=f.start_ms, end_ms=f.end_ms,
+                                          text=txt))
         regions.sort(key=lambda r: (r.start_ms, r.y))
         return regions
+
+
+_STRIP_RATIO = 0.065  # chiều cao dải đọc lại, tỉ lệ khung (720x1280: 83px)
+_MAX_TILT = 6  # độ; box chữ nghiêng hơn mức này là chữ trên đồ vật, không phải sub
+
+
+def _tilt(box) -> float:
+    """Độ nghiêng (độ) của cạnh trên box chữ."""
+    return abs(math.degrees(math.atan2(box[1][1] - box[0][1], box[1][0] - box[0][0])))
+
+
+def _dedupe(items: list[tuple[Rect, str, float]]) -> list[tuple[Rect, str]]:
+    """Gộp các lần đọc trùng 1 dòng (ảnh đầy đủ + các dải chồng nhau): giữ bản tin cậy nhất."""
+    out: list[tuple[Rect, str, float]] = []
+    for rect, txt, score in sorted(items, key=lambda it: -it[2]):
+        if any(iou(rect, r) > 0.3 or (v_overlap(rect, r) > 0.6 and _similar(txt, t)) for r, t, _ in out):
+            continue
+        out.append((rect, txt, score))
+    return [(r, t) for r, t, _ in out]
 
 
 def _text(frame: _Frame) -> str:
@@ -206,6 +313,9 @@ class VsfRegionDetector(RegionDetector):
 
     def detect(self, video_path: Path, progress: ProgressFn = no_progress) -> list[BlurRegion]:
         return list(self.pipeline.run(video_path, progress).regions)
+
+    def forget(self, video_path: Path) -> None:
+        self.pipeline.forget(video_path)
 
 
 class VsfOcrSource(SubtitleSource):

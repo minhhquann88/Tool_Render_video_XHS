@@ -1,0 +1,49 @@
+Read the following subtitles for a single video and build a JSON translation context
+to help translate them into Vietnamese.
+
+The most important job is to FIX THE VIETNAMESE FORMS OF ADDRESS (xưng hô). Vietnamese has no
+neutral "I/you": the translator must pick pronouns (tôi/mình/em/anh/chị/cậu/bạn/con/bố/mẹ/các bạn…)
+from the relationship between speaker and listener. The subtitles are translated in separate batches
+without speaker labels, so if the pronouns are not fixed here, each batch picks different ones
+(e.g. the same listener called "anh" in one line, "cậu" in the next, "bạn" later). Decide ONE set
+per relationship and keep it for the whole video.
+
+Goals:
+1. Identify the speakers and listeners: who talks, to whom, and their relationship
+   (host ↔ audience, friends, colleagues, chef ↔ customer, parent ↔ child, couple, …),
+   with apparent age / seniority / gender where it can be inferred.
+2. For EACH speaker → listener relationship, fix the Vietnamese pronouns: what the speaker calls
+   themselves and what they call the listener. Include how a narrator / vlogger addresses the viewers.
+3. Identify character names, place names and recurring terms (dishes, ingredients, brands,
+   catchphrases) and how to render them consistently in Vietnamese.
+4. Infer genre and tone.
+
+Output format:
+Return ONLY a single JSON object with the following structure:
+
+{
+  "characters": {
+    "<speaker or name as it appears, e.g. 'Chef', 'host', a person's name>": "<who they are + how they refer to themselves and to others in Vietnamese, e.g. 'đầu bếp, bạn của người dẫn; xưng tôi, gọi người dẫn là cậu'>"
+  },
+  "places": {
+    "<place name>": "<keep, or recommended Vietnamese form>"
+  },
+  "recurring_terms": {
+    "<source term or phrase>": "<recommended Vietnamese translation; keep it identical every time>"
+  },
+  "genre": "<short genre label, e.g. 'cooking vlog', 'comedy skit', 'product review'>",
+  "tone": "<short description, e.g. 'light and humorous', 'casual and friendly'>",
+  "formality": "<THE PRONOUN RULES, one rule per relationship, separated by '; '. Format: '<speaker> → <listener>: xưng <self pronoun>, gọi <listener pronoun>'. Example: 'Người dẫn → khán giả: xưng mình, gọi các bạn; Người dẫn → Chef: xưng tôi, gọi anh; Chef → người dẫn: xưng anh, gọi cậu'. When a line's speaker is unclear, say which rule is the default.>",
+  "style_notes": "<2–5 sentences of practical advice for the Vietnamese subtitle translator: register, slang level, how to keep lines short, how to handle mixed foreign words (e.g. keep 'Chef' or translate as 'bếp trưởng' — pick one).>"
+}
+
+Constraints:
+- Use real Vietnamese pronouns in "formality" and in "characters"; never write vague advice like
+  "informal" or "use friendly pronouns".
+- Pick pronouns that fit the relationship and tone (friends of similar age: tôi/cậu or mình/bạn;
+  vlogger to viewers: mình/các bạn; younger to older: em/anh or em/chị; …).
+- Do NOT list generic everyday words in "recurring_terms" unless they are a catchphrase or a
+  term that must stay identical (dish names, ingredients, brands, techniques).
+- Keep values short and practical (1–2 sentences).
+- If something is ambiguous, choose the most likely option and note it briefly instead of omitting it.
+- Do not output any explanation or text outside the JSON.

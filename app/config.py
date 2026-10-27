@@ -17,6 +17,15 @@ VSF_EXE = BASE_DIR / "tools" / "VideoSubFinder" / "VideoSubFinderWXW.exe"
 DEFAULT_COOKIE_FILE = BASE_DIR / "cookie.txt"
 PASTED_COOKIE_FILE = DATA_DIR / "xhs_cookie.txt"
 
+# Gemini API key mặc định, thử lần lượt từ trên xuống (sửa được ở bước Sub)
+DEFAULT_GEMINI_API_KEYS = [
+    "AQ.Ab8RN6LM75Q2M-878xfvCjU6CUX-yu-By9sNxIll46jElflJyA",
+    "AQ.Ab8RN6J_qFzDeTxnkyj0txWs_IVJgBKOFtX0NzkXpZLpOv3mEw",
+    "AQ.Ab8RN6IODEBUJ7z528Ukn6pXbU51XdHdG23bGIzPmLJv6HIniw",
+    "AQ.Ab8RN6JpyNVBCvo2cZqy5_UFoDQutEep8lJZ6C8Msk9C3Xdh7A",
+]
+DEFAULT_GEMINI_API_KEY = DEFAULT_GEMINI_API_KEYS[0]
+
 VIDEO_FILTER = "Video (*.mp4 *.mov *.mkv *.webm *.avi)"
 
 

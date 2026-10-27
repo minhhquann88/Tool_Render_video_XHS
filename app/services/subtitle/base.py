@@ -13,6 +13,9 @@ class RegionDetector(ABC):
     @abstractmethod
     def detect(self, video_path: Path, progress: ProgressFn = no_progress) -> list[BlurRegion]: ...
 
+    def forget(self, video_path: Path) -> None:
+        """Bỏ kết quả đã nhớ của video này -> lần detect sau quét lại thật (nút "Tìm lại")."""
+
 
 class SubtitleSource(ABC):
     """Sinh danh sách sub mới (OCR + dịch, Whisper, ...)."""

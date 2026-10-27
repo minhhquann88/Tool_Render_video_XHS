@@ -7,11 +7,12 @@ from app.services.scraper.base import VideoScraper
 from app.services.scraper.xhs import XhsScraper
 from app.services.subtitle.base import RegionDetector, SubtitleSource
 from app.services.subtitle.vsf_pipeline import VsfOcrSource, VsfRapidPipeline, VsfRegionDetector
+from app.services.translate.base import Translator
+from app.services.translate.subtrans import SubtransTranslator
 from app.services.tts.base import TTSProvider
-from app.services.tts.edge import EdgeTTSProvider
+from app.services.tts.vieneu import VieNeuTTSProvider
 from app.services.upload.base import Uploader
 from app.services.upload.gdrive import GoogleDriveUploader
-from app.services.upload.mock import MockUploader
 
 
 def _by_id(items):
@@ -23,6 +24,7 @@ class Services:
     scrapers: list[VideoScraper]
     detectors: dict[str, RegionDetector]
     subtitle_sources: dict[str, SubtitleSource]
+    translators: dict[str, Translator]
     tts: dict[str, TTSProvider]
     renderers: dict[str, Renderer]
     uploaders: dict[str, Uploader]
@@ -37,7 +39,8 @@ def build_services() -> Services:
         scrapers=[XhsScraper()],
         detectors=_by_id([VsfRegionDetector(vsf)]),
         subtitle_sources=_by_id([VsfOcrSource(vsf)]),
-        tts=_by_id([EdgeTTSProvider()]),
+        translators=_by_id([SubtransTranslator()]),
+        tts=_by_id([VieNeuTTSProvider()]),
         renderers=_by_id([FFmpegRenderer()]),
-        uploaders=_by_id([MockUploader(), GoogleDriveUploader()]),
+        uploaders=_by_id([GoogleDriveUploader()]),
     )

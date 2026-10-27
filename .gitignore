@@ -23,3 +23,7 @@ node_modules/
 package.json
 package-lock.json
 skills-lock.json
+
+# OAuth Google Drive: client secret của project (token đăng nhập nằm trong data/)
+client_secret*.json
+credentials.json
